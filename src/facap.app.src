@@ -1,0 +1,7 @@
+{application,
+ facap,
+ [{description, "Read and write pcap files"},
+  {vsn, "0.0.0"},
+  {applications, [kernel, stdlib]},
+  {licenses, ["MIT"]},
+  {links, [{"Github", "https://github.com/massemanet/facap"}]}]}.
