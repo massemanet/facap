@@ -122,7 +122,7 @@ mk_pkt(Pkt, Chunk, Opts) ->
                     Pkt#{ppi => PPI, chunk_data => Data}
               end;
         _ ->
-            Pkt
+            Pkt#{chunk => Chunk}
     end.
 
 maybe_done(#{'_count' := C, max_count := M}, Acc) when 0 < M, M < C -> throw(Acc);
