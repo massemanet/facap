@@ -114,18 +114,38 @@ pcap_packet(FD, P) ->
             original_len = little(?LIFT(file:pread(FD, P+12, 4)))},
     PC#pcap_packet{payload = ?LIFT(file:pread(FD, P+16, PC#pcap_packet.captured_len))}.
 
-mk_pkt(Pkt, Chunk, Opts) ->
+-define(DATA(P, D),          #sctp_chunk{type = ?SCTP_CHUNK_DATA, payload = #sctp_chunk_data{ppi = P, data = D}}).
+-define(INIT(),              #sctp_chunk{type = ?SCTP_CHUNK_INIT}).
+-define(INIT_ACK(),          #sctp_chunk{type = ?SCTP_CHUNK_INIT_ACK}).
+-define(SACK(),              #sctp_chunk{type = ?SCTP_CHUNK_SACK}).
+-define(HEARTBEAT(),         #sctp_chunk{type = ?SCTP_CHUNK_HEARTBEAT}).
+-define(HEARTBEAT_ACK(),     #sctp_chunk{type = ?SCTP_CHUNK_HEARTBEAT_ACK}).
+-define(ABORT(),             #sctp_chunk{type = ?SCTP_CHUNK_ABORT}).
+-define(SHUTDOWN(),          #sctp_chunk{type = ?SCTP_CHUNK_SHUTDOWN}).
+-define(SHUTDOWN_ACK(),      #sctp_chunk{type = ?SCTP_CHUNK_SHUTDOWN_ACK}).
+-define(ERROR(),             #sctp_chunk{type = ?SCTP_CHUNK_ERROR}).
+-define(COOKIE_ECHO(),       #sctp_chunk{type = ?SCTP_CHUNK_COOKIE_ECHO}).
+-define(COOKIE_ACK(),        #sctp_chunk{type = ?SCTP_CHUNK_COOKIE_ACK}).
+-define(SHUTDOWN_COMPLETE(), #sctp_chunk{type = ?SCTP_CHUNK_SHUTDOWN_COMPLETE}).
+mk_pkt(Pkt, Chunk, _Opts) ->
     case Chunk of
-        #sctp_chunk{payload = #sctp_chunk_data{ppi = PPI, data = Data}} ->
-            case maps:get(level, Opts, raw) of
-                raw ->
-                    Pkt#{ppi => PPI, chunk_data => Data}
-              end;
-        _ ->
-            Pkt#{chunk => Chunk}
+        ?DATA(PPI, Data)     -> Pkt#{chunk_type => data, ppi => PPI, chunk_data => Data};
+        ?INIT()              -> Pkt#{chunk_type => init};
+        ?INIT_ACK()          -> Pkt#{chunk_type => init_ack};
+        ?SACK()              -> Pkt#{chunk_type => sack};
+        ?HEARTBEAT()         -> Pkt#{chunk_type => heartbeat};
+        ?HEARTBEAT_ACK()     -> Pkt#{chunk_type => heartbeat_ack};
+        ?ABORT()             -> Pkt#{chunk_type => abort};
+        ?SHUTDOWN()          -> Pkt#{chunk_type => shutdown};
+        ?SHUTDOWN_ACK()      -> Pkt#{chunk_type => shutdown_ack};
+        ?ERROR()             -> Pkt#{chunk_type => error};
+        ?COOKIE_ECHO()       -> Pkt#{chunk_type => cookie_echo};
+        ?COOKIE_ACK()        -> Pkt#{chunk_type => cookie_ack};
+        ?SHUTDOWN_COMPLETE() -> Pkt#{chunk_type => shutdown_complete}
     end.
 
-maybe_done(#{'_count' := C, max_count := M}, Acc) when 0 < M, M < C -> throw(Acc);
+-define(COUNTS(C, M), #{'_count' := C, max_count := M}).
+maybe_done(?COUNTS(Count, Max), Acc) when 0 < Max, Max < Count -> throw(Acc);
 maybe_done(#{'_count' := C} = Opts, _) -> Opts#{'_count' => C+1}.
 
 %%%--------------------------------------------------------------------------
