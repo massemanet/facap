@@ -74,13 +74,9 @@ fold_loop(FD, Pos, Fun, Acc, Opts) ->
     PC = try pcap_packet(FD, Pos) catch exit:eof -> throw(Acc) end,
     NP = Pos+16+PC#pcap_packet.captured_len,
     TS = (PC#pcap_packet.ts_sec)+(PC#pcap_packet.ts_usec)/1000_000,
-    case decapsulated(pkt:decapsulate(linux_sll, PC#pcap_packet.payload), TS, Opts) of
-        {sctp, Pkts} ->
-            A = lists:foldl(fun(P, A) -> Fun(P, A) end, Acc, Pkts),
-            fold_loop(FD, NP, Fun, A, maybe_done(Opts, A));
-        {_, _} ->
-            fold_loop(FD, NP, Fun, Acc, maybe_done(Opts, Acc))
-    end.
+    Pkts =  decapsulated(pkt:decapsulate(linux_sll, PC#pcap_packet.payload), TS, Opts),
+    A = lists:foldl(fun(P, A) -> Fun(P, A) end, Acc, Pkts),
+    fold_loop(FD, NP, Fun, A, maybe_done(Opts, A)).
 
 decapsulated(X, TS, Opts) ->
     case X of
