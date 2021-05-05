@@ -3,6 +3,7 @@
 
 -export(
    [fold/3,
+    fold/4,
     encode/3]).
 
 -include_lib("kernel/include/file.hrl").
