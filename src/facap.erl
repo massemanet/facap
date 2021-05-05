@@ -5,6 +5,7 @@
    [fold/3,
     encode/3]).
 
+-include_lib("kernel/include/file.hrl").
 -include_lib("kernel/include/inet_sctp.hrl").
 -include_lib("kernel/include/logger.hrl").
 -include_lib("pkt/include/pkt.hrl").
@@ -40,6 +41,17 @@ hex(X) ->
 fold(Fun, Acc0, File) ->
     fold(Fun, Acc0, File, #{}).
 fold(Fun, Acc0, File, Opts) ->
+    case file:read_file_info(File) of
+        {error, enoent} -> {error, {no_such_file, File}};
+        {ok, #file_info{type = directory}} -> lists:foldl(fun(F, A) -> do_fold(Fun, A, F, Opts) end, Acc0, files(File));
+        {ok, #file_info{type = regular}} -> do_fold(Fun, Acc0, File, Opts)
+    end.
+
+files(Dir) ->
+    {ok, Fs}  = file:list_dir(Dir),
+    [filename:join(Dir, F) || F <- Fs].
+
+do_fold(Fun, Acc0, File, Opts) ->
     {ok, FD} = file:open(File, [read, raw, binary, read_ahead]),
     case hex(?LIFT(file:pread(FD, 0, 4))) of
         "d4c3b2a1" -> #pcap_file{dll_type = 113} = file_header_little(FD);
