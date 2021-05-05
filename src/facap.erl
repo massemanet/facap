@@ -19,10 +19,17 @@ hex(X) ->
 
 -define(LIFT(_X), (fun() -> case begin _X end of {ok, X} -> X; X -> exit(X) end end)()).
 
--define(SCTP(_Saddr, _Daddr, _Sport, _Dport, _Chunks),
+-define(COOKED(Pro),
+        [#linux_cooked{pro = Pro},
+         <<>>]).
+-define(IP(Saddr, Daddr, Proto),
         [#linux_cooked{},
-         #ipv4{saddr = _Saddr, daddr = _Daddr},
-         #sctp{sport = _Sport, dport = _Dport, chunks = _Chunks},
+         #ipv4{saddr = Saddr, daddr = Daddr, p = Proto},
+         <<>>]).
+-define(SCTP(Saddr, Daddr, Sport, Dport, Chunks),
+        [#linux_cooked{},
+         #ipv4{saddr = Saddr, daddr = Daddr},
+         #sctp{sport = Sport, dport = Dport, chunks = Chunks},
          <<>>]).
 
 -record(pcap_file,
@@ -62,9 +69,9 @@ do_fold(Fun, Acc0, File, Opts) ->
     after file:close(FD)
     end.
 
-fold_loop(FD, P, Fun, Acc, Opts) ->
-    PC = try pcap_packet(FD, P) catch exit:eof -> throw(Acc) end,
-    NP = P+16+PC#pcap_packet.captured_len,
+fold_loop(FD, Pos, Fun, Acc, Opts) ->
+    PC = try pcap_packet(FD, Pos) catch exit:eof -> throw(Acc) end,
+    NP = Pos+16+PC#pcap_packet.captured_len,
     TS = (PC#pcap_packet.ts_sec)+(PC#pcap_packet.ts_usec)/1000_000,
     case pkt:decapsulate(linux_sll, PC#pcap_packet.payload) of
         ?SCTP(Saddr, Daddr, Sport, Dport, Chunks) ->
@@ -73,8 +80,14 @@ fold_loop(FD, P, Fun, Acc, Opts) ->
                     daddr => Daddr, dport => Dport},
             A = lists:foldl(fun(C, A) -> Fun(mk_pkt(Pkt, C, Opts), A) end, Acc, Chunks),
             fold_loop(FD, NP, Fun, A, maybe_done(Opts, A));
-        _NotSctp ->
-            fold_loop(FD, NP, Fun, Acc, maybe_done(Opts, Acc))
+        ?IP(Saddr, Daddr, Proto) ->
+            erlang:display({not_sctp, Saddr, Daddr, Proto}),
+            fold_loop(FD, NP, Fun, Acc, maybe_done(Opts, Acc));
+        ?COOKED(Proto) ->
+            erlang:display({not_ip, Proto}),
+            fold_loop(FD, NP, Fun, Acc, maybe_done(Opts, Acc));
+        X ->
+            error({unrecognized_packet, X})
     end.
 
 file_header_little(FD) ->
