@@ -98,7 +98,7 @@ decapsulated(X, TS, Opts) ->
                     error({unrecognized_packet, X});
                 [Extra|T] ->
                     erlang:display({extra_bytes, Extra}),
-                    decapsulated(lists:reverse(T), TS, Opts)
+                    decapsulated(lists:reverse([<<>>|T]), TS, Opts)
             end
     end.
 
