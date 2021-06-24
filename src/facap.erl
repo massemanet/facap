@@ -4,6 +4,9 @@
 -export(
    [fold/3,
     fold/4,
+    open_file/1,
+    close_file/1,
+    write_packet/3,
     encode/3]).
 
 -include_lib("kernel/include/file.hrl").
@@ -18,20 +21,19 @@ big(X) ->
 hex(X) ->
     [case N<10 of true -> N+$0; false-> N+$W end || <<N:4>> <= X].
 
--define(LIFT(_X), (fun() -> case begin _X end of {ok, X} -> X; X -> exit(X) end end)()).
+-define(LIFT(X),
+        (fun() -> case begin X end of {ok, __X} -> __X; __X -> exit(__X) end end)()).
 
 -define(COOKED(Pro),
-        [#linux_cooked{pro = Pro},
-         <<>>]).
+        #linux_cooked{pro = Pro}).
 -define(IP(Saddr, Daddr, Proto),
-        [#linux_cooked{},
-         #ipv4{saddr = Saddr, daddr = Daddr, p = Proto},
-         <<>>]).
--define(SCTP(Saddr, Daddr, Sport, Dport, Chunks),
-        [#linux_cooked{},
-         #ipv4{saddr = Saddr, daddr = Daddr},
-         #sctp{sport = Sport, dport = Dport, chunks = Chunks},
-         <<>>]).
+        #ipv4{saddr = Saddr, daddr = Daddr, p = Proto}).
+-define(ICMP(),
+        #icmp{}).
+-define(TCP(Sport, Dport),
+        #tcp{sport = Sport, dport = Dport}).
+-define(SCTP(Sport, Dport, Chunks),
+        #sctp{sport = Sport, dport = Dport, chunks = Chunks}).
 
 -record(pcap_file,
         {maj_vsn,
@@ -74,34 +76,32 @@ fold_loop(FD, Pos, Fun, Acc, Opts) ->
     PC = try pcap_packet(FD, Pos) catch exit:eof -> throw(Acc) end,
     NP = Pos+16+PC#pcap_packet.captured_len,
     TS = (PC#pcap_packet.ts_sec)+(PC#pcap_packet.ts_usec)/1000_000,
-    Pkts =  decapsulated(pkt:decapsulate(linux_sll, PC#pcap_packet.payload), TS, Opts),
-    A = lists:foldl(fun(P, A) -> Fun(P, A) end, Acc, Pkts),
+    Pkt = decapsulated(pkt:decapsulate(linux_sll, PC#pcap_packet.payload), TS, Opts),
+    A = lists:foldl(fun(P, A) -> Fun(P, A) end, Acc, mk_pkts(Pkt, Opts)),
     fold_loop(FD, NP, Fun, A, maybe_done(Opts, A)).
 
-decapsulated(X, TS, Opts) ->
-    case X of
-        ?SCTP(Saddr, Daddr, Sport, Dport, Chunks) ->
-            Pkt = #{proto => sctp, ts => TS, count => maps:get('_count', Opts),
-                    saddr => Saddr, sport => Sport,
-                    daddr => Daddr, dport => Dport},
-            [mk_pkt(Pkt, C, Opts) || C <- Chunks];
-        ?IP(Saddr, Daddr, Proto) ->
-            [#{proto => ip, ts => TS, count => maps:get('_count', Opts),
-               saddr => Saddr, daddr => Daddr, protocol => Proto}];
-        ?COOKED(Proto) ->
-            erlang:display({not_ip, Proto}),
-            [#{proto => cooked, ts => TS, count => maps:get('_count', Opts),
-               protocol => Proto}];
-        [_|_] ->
-            case lists:reverse(X) of
-                [<<>>|_] ->
-                    error({unrecognized_packet, X});
-                [Extra|T] ->
-                    erlang:display({extra_bytes, Extra}),
-                    decapsulated(lists:reverse([<<>>|T]), TS, Opts)
-            end
-    end.
+decapsulated(Dec, TS, #{'_count' := Count}) ->
+    dec(Dec, #{ts => TS, count => Count}).
 
+dec([<<>>], Pkt) ->
+    Pkt;
+dec([Extra], Pkt) when is_binary(Extra) ->
+    Pkt#{extra => Extra};
+dec([H|T], Pkt) ->
+    case H of
+        ?SCTP(Sport, Dport, Chunks) ->
+            dec(T, Pkt#{proto => sctp, sport => Sport, dport => Dport, chunks => Chunks});
+        ?TCP(Sport, Dport) ->
+            dec(T, Pkt#{proto => tcp, sport => Sport, dport => Dport});
+        ?ICMP() ->
+            dec(T, Pkt#{proto => icmp});
+        ?IP(Saddr, Daddr, Proto) ->
+            dec(T, Pkt#{proto => ip, saddr => Saddr, daddr => Daddr, protocol1 => Proto});
+        ?COOKED(Proto) ->
+            dec(T, Pkt#{proto => cooked, protocol0 => Proto});
+        _ ->
+            error({unrecognized_packet, [H|T]})
+    end.
 
 file_header_little(FD) ->
     #pcap_file{
@@ -127,6 +127,13 @@ pcap_packet(FD, P) ->
             original_len = little(?LIFT(file:pread(FD, P+12, 4)))},
     PC#pcap_packet{payload = ?LIFT(file:pread(FD, P+16, PC#pcap_packet.captured_len))}.
 
+
+mk_pkts(Pkt, _Opts) ->
+    case Pkt of
+        #{proto := sctp, chunks := Chunks} -> [chunk(Pkt, C) || C <- Chunks];
+        #{proto := _} -> [Pkt]
+    end.
+
 -define(DATA(P, D),          #sctp_chunk{type = ?SCTP_CHUNK_DATA, payload = #sctp_chunk_data{ppi = P, data = D}}).
 -define(INIT(),              #sctp_chunk{type = ?SCTP_CHUNK_INIT}).
 -define(INIT_ACK(),          #sctp_chunk{type = ?SCTP_CHUNK_INIT_ACK}).
@@ -140,7 +147,8 @@ pcap_packet(FD, P) ->
 -define(COOKIE_ECHO(),       #sctp_chunk{type = ?SCTP_CHUNK_COOKIE_ECHO}).
 -define(COOKIE_ACK(),        #sctp_chunk{type = ?SCTP_CHUNK_COOKIE_ACK}).
 -define(SHUTDOWN_COMPLETE(), #sctp_chunk{type = ?SCTP_CHUNK_SHUTDOWN_COMPLETE}).
-mk_pkt(Pkt, Chunk, _Opts) ->
+
+chunk(Pkt, Chunk) ->
     case Chunk of
         ?DATA(PPI, Data)     -> Pkt#{chunk_type => data, ppi => PPI, chunk_data => Data};
         ?INIT()              -> Pkt#{chunk_type => init};
@@ -164,6 +172,34 @@ maybe_done(#{'_count' := C} = Opts, _) -> Opts#{'_count' => C+1}.
 %%%--------------------------------------------------------------------------
 %%% construct a cooked binary with `Payload' stuffed in
 %%% ipv4/sctp/sctp_chunk/sctp_data_chunk
+
+open_file(Filename) ->
+    Magic = 16#a1b2c3d4,
+    MinVsn = 666,
+    MajVsn = 666,
+    SnapLen = 3456,
+    DllType = 113,
+    {ok, FD} = file:open(Filename, [write, raw, binary]),
+    ok = file:write(FD, <<Magic:32>>),
+    ok = file:write(FD, <<MajVsn:16>>),
+    ok = file:write(FD, <<MinVsn:16>>),
+    ok = file:write(FD, <<0:64>>),
+    ok = file:write(FD, <<SnapLen:32>>),
+    ok = file:write(FD, <<DllType:32>>),
+    FD.
+
+close_file(FD) ->
+    ok = file:close(FD).
+
+write_packet(FD, TS, Payload) ->
+    TSsec =trunc(TS),
+    TSusec = round((TS-TSsec)*1000_000),
+    Len = byte_size(Payload),
+    ok = file:write(FD, <<TSsec:32>>),
+    ok = file:write(FD, <<TSusec:32>>),
+    ok = file:write(FD, <<Len:32>>),
+    ok = file:write(FD, <<Len:32>>),
+    ok = file:write(FD, <<Payload/binary>>).
 
 encode(Framing, PPI, Data) ->
     Saddr = maps:get(saddr, Framing, {127,0,0,1}),
