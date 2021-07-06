@@ -1,11 +1,12 @@
 {"1.2.0",
-[{<<"pkt">>,{pkg,<<"pkt">>,<<"0.5.0">>},0},
+[{<<"pkt">>,
+  {git,"https://github.com/massemanet/pkt",
+       {ref,"8f2714f2a55755208cec6a634d893f1fe82e32b5"}},
+  0},
  {<<"redbug">>,{pkg,<<"redbug">>,<<"2.0.7">>},0}]}.
 [
 {pkg_hash,[
- {<<"pkt">>, <<"6DC345565DD7E8D80E56C1198E1EE07344F191782D9F1E66ECA50B40C98B1720">>},
  {<<"redbug">>, <<"40F477681E4957A1EBCE19B23A9B53CD8113DA6133014C506E3E194A6E4FFC89">>}]},
 {pkg_hash_ext,[
- {<<"pkt">>, <<"C285CD1E5FB850D09F7FD98E1C9E291D1348AB41E4171C78FA99D04E04D84FB2">>},
  {<<"redbug">>, <<"3624FEB7A4B78FD9AE0E66CC3158FE7422770AD6987A1EBF8DF4D3303B1C4B0C">>}]}
 ].

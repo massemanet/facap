@@ -7,7 +7,7 @@
     open_file/1,
     close_file/1,
     write_packet/3,
-    encode/3]).
+    encode/1]).
 
 -include_lib("kernel/include/file.hrl").
 -include_lib("kernel/include/inet_sctp.hrl").
@@ -174,11 +174,13 @@ maybe_done(#{'_count' := C} = Opts, _) -> Opts#{'_count' => C+1}.
 %%% ipv4/sctp/sctp_chunk/sctp_data_chunk
 
 open_file(Filename) ->
+    open_file(Filename, #{}).
+open_file(Filename, Opts) ->
     Magic = 16#a1b2c3d4,
-    MinVsn = 666,
-    MajVsn = 666,
-    SnapLen = 3456,
-    DllType = 113,
+    MinVsn = maps:get(min_vsn, Opts, 666),
+    MajVsn = maps:get(maj_vsn, Opts, 666),
+    SnapLen = maps:get(snap_len, Opts, 16#ffff0000),
+    DllType = maps:get(dll_type, Opts, 113),
     {ok, FD} = file:open(Filename, [write, raw, binary]),
     ok = file:write(FD, <<Magic:32>>),
     ok = file:write(FD, <<MajVsn:16>>),
@@ -192,7 +194,7 @@ close_file(FD) ->
     ok = file:close(FD).
 
 write_packet(FD, TS, Payload) ->
-    TSsec =trunc(TS),
+    TSsec = trunc(TS),
     TSusec = round((TS-TSsec)*1000_000),
     Len = byte_size(Payload),
     ok = file:write(FD, <<TSsec:32>>),
@@ -201,21 +203,39 @@ write_packet(FD, TS, Payload) ->
     ok = file:write(FD, <<Len:32>>),
     ok = file:write(FD, <<Payload/binary>>).
 
-encode(Framing, PPI, Data) ->
-    Saddr = maps:get(saddr, Framing, {127,0,0,1}),
-    Daddr = maps:get(daddr, Framing, {127,0,0,1}),
-    Sport = maps:get(sport, Framing, 0),
-    Dport = maps:get(dport, Framing, 0),
-    Chunk = #sctp_chunk{payload = #sctp_chunk_data{ppi = PPI, data = Data}},
-    SctpLen = 12+4+12+byte_size(Data),
-    IpLen = 20+SctpLen,
-    pkt:encode([#linux_cooked{packet_type = 0,
-                              ll_len = 6},
-                #ipv4{len = IpLen,
-                      p = ?IPPROTO_SCTP,
-                      sum = 0,
-                      saddr = Saddr,
-                      daddr = Daddr},
-                #sctp{sport = Sport,
-                      dport = Dport,
-                      chunks = [Chunk]}]).
+encode(Layers) ->
+    pkt:encode(expand(Layers)).
+
+expand(Layers) ->
+    S0 = #{global => #{}, out => []},
+    maps:get(out, lists:foldr(fun expand/2, S0, Layers)).
+
+expand(#{type := cooked} = Cooked, Acc) ->
+    #{global := Global, out := Out} = Acc,
+    MAC = <<"amacaddr">>,
+    Packet = #linux_cooked{packet_type = 4, ll_bytes = MAC, ll_len = 6},
+    #{global => Global, out => [Packet|Out]};
+expand(#{type := ipv4} = IPV4, Acc) ->
+    #{global := Global, out := Out} = Acc,
+    Saddr = maps:get(saddr, IPV4, {127,0,0,1}),
+    Daddr = maps:get(daddr, IPV4, {127,0,0,1}),
+    PayloadLen = maps:get(ip_payload_length, Global, 0),
+    PayloadProto = maps:get(ip_payload_proto, Global, ?IPPROTO_TCP),
+    Len = 20+PayloadLen,
+    Packet = #ipv4{len = Len, p = PayloadProto, saddr = Saddr, daddr = Daddr},
+    #{global => Global, out => [Packet|Out]};
+expand(#{type := sctp} = SCTP, Acc) ->
+    #{global := Global, out := Out} = Acc,
+    Sport = maps:get(sport, SCTP, 0),
+    Dport = maps:get(dport, SCTP, 0),
+    Data = maps:get(data, SCTP, <<>>),
+    PPI = maps:get(ppi, SCTP, 3),
+    Len = 12+4+12+byte_size(Data),
+    ChunkData = #sctp_chunk_data{ppi = PPI, data = Data},
+    Chunk = #sctp_chunk{type = ?SCTP_CHUNK_DATA,
+                        b = 1,     % first segment
+                        e = 1,     % last segment
+                        payload = ChunkData},
+    Packet = #sctp{sport = Sport, dport = Dport, chunks = [Chunk]},
+    Glob = Global#{ip_payload_length => Len, ip_payload_proto => ?IPPROTO_SCTP},
+    #{global => Glob, out => [Packet|Out]}.
