@@ -3,10 +3,10 @@
   {git,"https://github.com/massemanet/pkt",
        {ref,"8f2714f2a55755208cec6a634d893f1fe82e32b5"}},
   0},
- {<<"redbug">>,{pkg,<<"redbug">>,<<"2.0.7">>},0}]}.
+ {<<"redbug">>,{pkg,<<"redbug">>,<<"2.0.9">>},0}]}.
 [
 {pkg_hash,[
- {<<"redbug">>, <<"40F477681E4957A1EBCE19B23A9B53CD8113DA6133014C506E3E194A6E4FFC89">>}]},
+ {<<"redbug">>, <<"47A0802EA5CA5F2C54BD9B0BE429FF3AC839E85A277E97105D7E6107174B25F3">>}]},
 {pkg_hash_ext,[
- {<<"redbug">>, <<"3624FEB7A4B78FD9AE0E66CC3158FE7422770AD6987A1EBF8DF4D3303B1C4B0C">>}]}
+ {<<"redbug">>, <<"048CECDD53183A57E0F8A3F81BED2EA4C3AD424D319EABD5EF158B9FC3EA2C69">>}]}
 ].
