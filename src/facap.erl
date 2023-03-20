@@ -21,11 +21,10 @@ big(X) ->
 hex(X) ->
     [case N<10 of true -> N+$0; false-> N+$W end || <<N:4>> <= X].
 
--define(LIFT(X),
-        (fun() -> case begin X end of {ok, __X} -> __X; __X -> exit(__X) end end)()).
-
 -define(COOKED(Pro),
         #linux_cooked{pro = Pro}).
+-define(ETHER(),
+       #ether{}).
 -define(IP(Saddr, Daddr, Proto),
         #ipv4{saddr = Saddr, daddr = Daddr, p = Proto}).
 -define(ICMP(),
@@ -35,13 +34,13 @@ hex(X) ->
 -define(SCTP(Sport, Dport, Chunks),
         #sctp{sport = Sport, dport = Dport, chunks = Chunks}).
 
--record(pcap_file,
+-record(file_header,
         {maj_vsn,
          min_vsn,
          snap_length,
          dll_type}).
 
--record(pcap_packet,
+-record(packet_header,
         {ts_sec,
          ts_usec,
          captured_len,
@@ -63,22 +62,46 @@ files(Dir) ->
 
 do_fold(Fun, Acc0, File, Opts) ->
     {ok, FD} = file:open(File, [read, raw, binary, read_ahead]),
-    case hex(?LIFT(file:pread(FD, 0, 4))) of
-        "d4c3b2a1" -> #pcap_file{dll_type = 113} = file_header_little(FD);
-        "a1b2c3d4" -> #pcap_file{dll_type = 113} = file_header_big(FD)
-    end,
-    try fold_loop(FD, 24, Fun, Acc0, Opts#{'_count' => 0})
+    H = file_header(FD),
+    try fold_loop(Fun, Acc0, Opts#{'_count' => 0, fd => FD, ptr => 24, file_header => H})
     catch throw:Acc -> Acc
     after file:close(FD)
     end.
 
-fold_loop(FD, Pos, Fun, Acc, Opts) ->
-    PC = try pcap_packet(FD, Pos) catch exit:eof -> throw(Acc) end,
-    NP = Pos+16+PC#pcap_packet.captured_len,
-    TS = (PC#pcap_packet.ts_sec)+(PC#pcap_packet.ts_usec)/1000_000,
-    Pkt = decapsulated(pkt:decapsulate(linux_sll, PC#pcap_packet.payload), TS, Opts),
+file_header(FD) ->
+    case hex(lift(ok, file:pread(FD, 0, 4))) of
+        "d4c3b2a1" -> file_header_little(FD);
+        "a1b2c3d4" -> file_header_big(FD)
+    end.
+
+file_header_little(FD) ->
+    #file_header{
+       maj_vsn = little(lift(ok, file:pread(FD, 4, 2))),
+       min_vsn = little(lift(ok, file:pread(FD, 6, 2))),
+       %% _ = hex(lift(ok, file:pread(FD, 8, 8))),
+       snap_length = little(lift(ok, file:pread(FD, 16, 4))),
+       dll_type = dll(little(lift(ok, file:pread(FD, 20, 4))))}.
+
+file_header_big(FD) ->
+    #file_header{
+       maj_vsn = big(lift(ok, file:pread(FD, 4, 2))),
+       min_vsn = big(lift(ok, file:pread(FD, 6, 2))),
+       %% _ = hex(lift(ok, file:pread(FD, 8, 8))),
+       snap_length = big(lift(ok, file:pread(FD, 16, 4))),
+       dll_type = dll(big(lift(ok, file:pread(FD, 20, 4))))}.
+
+
+dll(?DLT_EN10MB) -> ether;
+dll(?DLT_LINUX_SLL) -> linux_cooked;
+dll(?DLT_LINUX_SLL2) -> linux_cooked_v2.
+
+fold_loop(Fun, Acc, #{fd := FD, ptr := Ptr0, file_header := #file_header{dll_type = DLLT}} = Opts) ->
+    PC = try packet_header(FD, Ptr0) catch exit:eof -> throw(Acc) end,
+    Ptr = Ptr0+16+PC#packet_header.captured_len,
+    TS = (PC#packet_header.ts_sec)+(PC#packet_header.ts_usec)/1000_000,
+    Pkt = decapsulated(pkt:decapsulate(DLLT, PC#packet_header.payload), TS, Opts),
     A = lists:foldl(fun(P, A) -> Fun(P, A) end, Acc, mk_pkts(Pkt, Opts)),
-    fold_loop(FD, NP, Fun, A, maybe_done(Opts, A)).
+    fold_loop(Fun, A, maybe_done(Opts#{ptr => Ptr}, A)).
 
 decapsulated(Dec, TS, #{'_count' := Count}) ->
     dec(Dec, #{ts => TS, count => Count}).
@@ -99,33 +122,19 @@ dec([H|T], Pkt) ->
             dec(T, Pkt#{proto => ip, saddr => Saddr, daddr => Daddr, protocol1 => Proto});
         ?COOKED(Proto) ->
             dec(T, Pkt#{proto => cooked, protocol0 => Proto});
+        ?ETHER() ->
+            dec(T, Pkt#{proto => ether});
         _ ->
             error({unrecognized_packet, [H|T]})
     end.
 
-file_header_little(FD) ->
-    #pcap_file{
-       maj_vsn = little(?LIFT(file:pread(FD, 4, 2))),
-       min_vsn = little(?LIFT(file:pread(FD, 6, 2))),
-       %% _ = hex(?LIFT(file:pread(FD, 8, 8))),
-       snap_length = little(?LIFT(file:pread(FD, 16, 4))),
-       dll_type = little(?LIFT(file:pread(FD, 20, 4)))}.
-
-file_header_big(FD) ->
-    #pcap_file{
-       maj_vsn = big(?LIFT(file:pread(FD, 4, 2))),
-       min_vsn = big(?LIFT(file:pread(FD, 6, 2))),
-       %% _ = hex(?LIFT(file:pread(FD, 8, 8))),
-       snap_length = big(?LIFT(file:pread(FD, 16, 4))),
-       dll_type = big(?LIFT(file:pread(FD, 20, 4)))}.
-
-pcap_packet(FD, P) ->
-    PC = #pcap_packet{
-            ts_sec = little(?LIFT(file:pread(FD, P+0, 4))),
-            ts_usec = little(?LIFT(file:pread(FD, P+4, 4))),
-            captured_len = little(?LIFT(file:pread(FD, P+8, 4))),
-            original_len = little(?LIFT(file:pread(FD, P+12, 4)))},
-    PC#pcap_packet{payload = ?LIFT(file:pread(FD, P+16, PC#pcap_packet.captured_len))}.
+packet_header(FD, P) ->
+    PC = #packet_header{
+            ts_sec = little(lift(ok, file:pread(FD, P+0, 4))),
+            ts_usec = little(lift(ok, file:pread(FD, P+4, 4))),
+            captured_len = little(lift(ok, file:pread(FD, P+8, 4))),
+            original_len = little(lift(ok, file:pread(FD, P+12, 4)))},
+    PC#packet_header{payload = lift(ok, file:pread(FD, P+16, PC#packet_header.captured_len))}.
 
 
 mk_pkts(Pkt, _Opts) ->
@@ -210,7 +219,7 @@ expand(Layers) ->
     S0 = #{global => #{}, out => []},
     maps:get(out, lists:foldr(fun expand/2, S0, Layers)).
 
-expand(#{type := cooked} = Cooked, Acc) ->
+expand(#{type := cooked}, Acc) ->
     #{global := Global, out := Out} = Acc,
     MAC = <<"amacaddr">>,
     Packet = #linux_cooked{packet_type = 4, ll_bytes = MAC, ll_len = 6},
@@ -239,3 +248,8 @@ expand(#{type := sctp} = SCTP, Acc) ->
     Packet = #sctp{sport = Sport, dport = Dport, chunks = [Chunk]},
     Glob = Global#{ip_payload_length => Len, ip_payload_proto => ?IPPROTO_SCTP},
     #{global => Glob, out => [Packet|Out]}.
+
+lift(ok, eof) ->
+    exit(eof);
+lift(Tag, {Tag, Val}) ->
+    Val.
