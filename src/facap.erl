@@ -1,10 +1,16 @@
 %% -*- mode: erlang; erlang-indent-level: 4 -*-
 -module(facap).
 
+%% reading
 -export(
-   [fold/3,
-    fold/4,
-    open_file/1,
+   [header/1,
+    list/1,
+    fold/3,
+    fold/4]).
+
+%% writing
+-export(
+   [open_file/1,
     close_file/1,
     write_packet/3,
     encode/1]).
@@ -14,21 +20,22 @@
 -include_lib("kernel/include/logger.hrl").
 -include_lib("pkt/include/pkt.hrl").
 
-little(X) ->
-    binary:decode_unsigned(X, little).
-big(X) ->
-    binary:decode_unsigned(X, big).
-hex(X) ->
-    [case N<10 of true -> N+$0; false-> N+$W end || <<N:4>> <= X].
-
--define(COOKED(Pro),
-        #linux_cooked{pro = Pro}).
+-define(COOKED(PT),
+        #linux_cooked{packet_type = PT}).
+-define(COOKED2(PT),
+        #linux_cooked_v2{packet_type = PT}).
 -define(ETHER(),
        #ether{}).
--define(IP(Saddr, Daddr, Proto),
-        #ipv4{saddr = Saddr, daddr = Daddr, p = Proto}).
+-define(ARP() ,
+        #arp{}).
+-define(IP4(Saddr, Daddr),
+        #ipv4{saddr = Saddr, daddr = Daddr}).
+-define(IP6(Saddr, Daddr),
+        #ipv6{saddr = Saddr, daddr = Daddr}).
 -define(ICMP(),
         #icmp{}).
+-define(UDP(Sport, Dport),
+        #udp{sport = Sport, dport = Dport}).
 -define(TCP(Sport, Dport),
         #tcp{sport = Sport, dport = Dport}).
 -define(SCTP(Sport, Dport, Chunks),
@@ -38,110 +45,166 @@ hex(X) ->
         {maj_vsn,
          min_vsn,
          snap_length,
+         time_resolution,
          dll_type}).
 
--record(packet_header,
+-record(packet,
         {ts_sec,
-         ts_usec,
          captured_len,
          original_len,
          payload}).
 
+header(File) ->
+    {ok, FD} = file:open(File, [read, raw, binary, read_ahead]),
+    try to_map(file_header(FD))
+    after file:close(FD)
+    end.
+
+list(File) ->
+    lists:reverse(fold(fun(P, O) -> [P|O] end, [], File)).
+
 fold(Fun, Acc0, File) ->
-    fold(Fun, Acc0, File, #{}).
+    fold(Fun, Acc0, File, #{max_count => inf}).
+
 fold(Fun, Acc0, File, Opts) ->
     case file:read_file_info(File) of
-        {error, enoent} -> {error, {no_such_file, File}};
-        {ok, #file_info{type = directory}} -> lists:foldl(fun(F, A) -> do_fold(Fun, A, F, Opts) end, Acc0, files(File));
-        {ok, #file_info{type = regular}} -> do_fold(Fun, Acc0, File, Opts)
+        {error, enoent} ->
+            {error, {no_such_file, File}};
+        {ok, #file_info{type = directory}} ->
+            folder(Fun, Acc0, Opts, files(File));
+        {ok, #file_info{type = regular}} ->
+            folder(Fun, Acc0, Opts, [File])
     end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 files(Dir) ->
     {ok, Fs}  = file:list_dir(Dir),
     [filename:join(Dir, F) || F <- Fs].
 
-do_fold(Fun, Acc0, File, Opts) ->
+folder(Fun, Acc0, Opts, Files) ->
+    lists:foldl(mk_folder(Fun, Opts), Acc0, Files).
+
+mk_folder(Fun, Opts) ->
+    fun(F, A) -> do_fold(Fun, A, F, Opts) end.
+
+do_fold(Fun, Acc0, File, Opts0) ->
     {ok, FD} = file:open(File, [read, raw, binary, read_ahead]),
-    H = file_header(FD),
-    try fold_loop(Fun, Acc0, Opts#{'_count' => 0, fd => FD, ptr => 24, file_header => H})
+    Opts = opts(FD, Opts0),
+    try fold_loop(Fun, Acc0, Opts)
     catch throw:Acc -> Acc
     after file:close(FD)
     end.
 
+opts(FD, Opts) ->
+    FH = file_header(FD),
+    maps:merge(#{'_count' => 0, fd => FD, ptr => 24, file_header => FH}, Opts).
+
 file_header(FD) ->
     case hex(lift(ok, file:pread(FD, 0, 4))) of
-        "d4c3b2a1" -> file_header_little(FD);
-        "a1b2c3d4" -> file_header_big(FD)
+        "0a0d0d0a" -> file_header(ng, ng, FD);
+        "a1b23c4d" -> file_header(big, nano, FD);
+        "a1b2c3d4" -> file_header(big, micro, FD);
+        "4d3cb2a1" -> file_header(little, nano, FD);
+        "d4c3b2a1" -> file_header(little, micro, FD)
     end.
 
-file_header_little(FD) ->
-    #file_header{
-       maj_vsn = little(lift(ok, file:pread(FD, 4, 2))),
-       min_vsn = little(lift(ok, file:pread(FD, 6, 2))),
-       %% _ = hex(lift(ok, file:pread(FD, 8, 8))),
-       snap_length = little(lift(ok, file:pread(FD, 16, 4))),
-       dll_type = dll(little(lift(ok, file:pread(FD, 20, 4))))}.
+hex(X) ->
+    [case N<10 of true -> N+$0; false-> N+$W end || <<N:4>> <= X].
 
-file_header_big(FD) ->
+file_header(ng, ng, _FD) ->
+    error({pcap_ng, not_yet_implemented});
+file_header(Endian, TimeRes, FD) ->
+    {Maj, Min, Snap, DLL} = file_header(Endian, FD),
     #file_header{
-       maj_vsn = big(lift(ok, file:pread(FD, 4, 2))),
-       min_vsn = big(lift(ok, file:pread(FD, 6, 2))),
-       %% _ = hex(lift(ok, file:pread(FD, 8, 8))),
-       snap_length = big(lift(ok, file:pread(FD, 16, 4))),
-       dll_type = dll(big(lift(ok, file:pread(FD, 20, 4))))}.
+       maj_vsn = Maj,
+       min_vsn = Min,
+       time_resolution = timeres(TimeRes),
+       snap_length = Snap,
+       dll_type = dll(DLL)}.
 
+file_header(Endian, FD) ->
+    {ok, H} = file:pread(FD, 4, 20),
+    fh(Endian, H).
+
+fh(big, <<A:16/big, B:16/big, _:8/bytes, C:32/big, D:32/big>>) ->
+    {A, B, C, D};
+fh(little, <<A:16/little, B:16/little, _:8/bytes, C:32/little, D:32/little>>) ->
+    {A, B, C, D}.
+
+timeres(micro) -> 1_000_000;
+timeres(nano) -> 1_000_000_000.
 
 dll(?DLT_EN10MB) -> ether;
 dll(?DLT_LINUX_SLL) -> linux_cooked;
 dll(?DLT_LINUX_SLL2) -> linux_cooked_v2.
 
-fold_loop(Fun, Acc, #{fd := FD, ptr := Ptr0, file_header := #file_header{dll_type = DLLT}} = Opts) ->
-    PC = try packet_header(FD, Ptr0) catch exit:eof -> throw(Acc) end,
-    Ptr = Ptr0+16+PC#packet_header.captured_len,
-    TS = (PC#packet_header.ts_sec)+(PC#packet_header.ts_usec)/1000_000,
-    Pkt = decapsulated(pkt:decapsulate(DLLT, PC#packet_header.payload), TS, Opts),
-    A = lists:foldl(fun(P, A) -> Fun(P, A) end, Acc, mk_pkts(Pkt, Opts)),
-    fold_loop(Fun, A, maybe_done(Opts#{ptr => Ptr}, A)).
+fold_loop(Fun, Acc, Opts0) ->
+    Opts = try packet(Opts0) catch error:{badmatch,eof} -> throw(Acc) end,
+    Pkt = decapsulate(Opts),
+    fold_loop(Fun, Fun(Pkt, Acc), Opts).
 
-decapsulated(Dec, TS, #{'_count' := Count}) ->
-    dec(Dec, #{ts => TS, count => Count}).
+packet(Opts0) ->
+    #{fd := FD, ptr := Ptr, file_header := FH} = Opts = maybe_done(Opts0),
+    {ok, PH} = file:pread(FD, Ptr, 16),
+    <<TSsec:32/little, TSfrac:32/little, Cap:32/little, Orig:32/little>> = PH,
+    {ok, Payload} = file:pread(FD, Ptr+16, Cap),
+    Opts#{ptr => Ptr+16+Cap,
+          packet => #packet{
+                       ts_sec = TSsec+TSfrac/FH#file_header.time_resolution,
+                       captured_len = Cap,
+                       original_len = Orig,
+                       payload = Payload}}.
 
+decapsulate(#{'_count' := Count, packet := Packet, file_header := FH}) ->
+    Protos = pkt:decapsulate(FH#file_header.dll_type, Packet#packet.payload),
+    dec(Protos, #{ts => Packet#packet.ts_sec, count => Count, protos => []}).
+
+-define(CM(C, M), #{'_count' := C, max_count := M}).
+-define(IS_DONE(Count, Max), is_integer(Max), Max < Count).
+maybe_done(?CM(Count, Max)) when ?IS_DONE(Count, Max) -> error({badmatch, eof});
+maybe_done(Opts) -> maps:update_with('_count', fun plus1/1, Opts).
+
+plus1(I) -> I+1.
+
+dec([], Pkt) ->
+    Pkt;
 dec([<<>>], Pkt) ->
     Pkt;
-dec([Extra], Pkt) when is_binary(Extra) ->
-    Pkt#{extra => Extra};
 dec([H|T], Pkt) ->
     case H of
-        ?SCTP(Sport, Dport, Chunks) ->
-            dec(T, Pkt#{proto => sctp, sport => Sport, dport => Dport, chunks => Chunks});
-        ?TCP(Sport, Dport) ->
-            dec(T, Pkt#{proto => tcp, sport => Sport, dport => Dport});
-        ?ICMP() ->
-            dec(T, Pkt#{proto => icmp});
-        ?IP(Saddr, Daddr, Proto) ->
-            dec(T, Pkt#{proto => ip, saddr => Saddr, daddr => Daddr, protocol1 => Proto});
-        ?COOKED(Proto) ->
-            dec(T, Pkt#{proto => cooked, protocol0 => Proto});
+        ?COOKED(PT) ->
+            dec(T, mappend(protos, {cooked, cooked_dir(PT)}, Pkt));
+        ?COOKED2(PT) ->
+            dec(T, mappend(protos, {cooked2, cooked_dir(PT)}, Pkt));
         ?ETHER() ->
-            dec(T, Pkt#{proto => ether});
+            dec(T, mappend(protos, ether, Pkt));
+        ?ARP() ->
+            dec(T, mappend(protos, arp, Pkt));
+        ?IP4(Saddr, Daddr) ->
+            dec(T, mappend(protos, #{ip => 4, saddr => Saddr, daddr => Daddr}, Pkt));
+        ?IP6(Saddr, Daddr) ->
+            dec(T, mappend(protos, #{ip => 6, saddr => Saddr, daddr => Daddr}, Pkt));
+        ?ICMP() ->
+            mappend(protos, icmp, Pkt);
+        ?SCTP(Sport, Dport, Chunks) ->
+            mappend(payload, chunks(Chunks), mappend(protos, #{l4 => sctp, sport => Sport, dport => Dport}, Pkt));
+        ?TCP(Sport, Dport) ->
+            mappend(payload, hd(T), mappend(protos, #{l4 => tcp, sport => Sport, dport => Dport}, Pkt));
+        ?UDP(Sport, Dport) ->
+            mappend(payload, hd(T), mappend(protos, #{l4 => udp, sport => Sport, dport => Dport}, Pkt));
         _ ->
             error({unrecognized_packet, [H|T]})
     end.
 
-packet_header(FD, P) ->
-    PC = #packet_header{
-            ts_sec = little(lift(ok, file:pread(FD, P+0, 4))),
-            ts_usec = little(lift(ok, file:pread(FD, P+4, 4))),
-            captured_len = little(lift(ok, file:pread(FD, P+8, 4))),
-            original_len = little(lift(ok, file:pread(FD, P+12, 4)))},
-    PC#packet_header{payload = lift(ok, file:pread(FD, P+16, PC#packet_header.captured_len))}.
+mappend(Key, Val, Map) ->
+    maps:update_with(Key, fun(Vals) -> [Val|Vals] end, Val, Map).
 
-
-mk_pkts(Pkt, _Opts) ->
-    case Pkt of
-        #{proto := sctp, chunks := Chunks} -> [chunk(Pkt, C) || C <- Chunks];
-        #{proto := _} -> [Pkt]
-    end.
+cooked_dir(0) -> 'incoming(uni)';
+cooked_dir(1) -> 'incoming(broadcast)';
+cooked_dir(2) -> 'incoming(multicast)';
+cooked_dir(3) -> 'transit';
+cooked_dir(4) -> 'outgoing'.
 
 -define(DATA(P, D),          #sctp_chunk{type = ?SCTP_CHUNK_DATA, payload = #sctp_chunk_data{ppi = P, data = D}}).
 -define(INIT(),              #sctp_chunk{type = ?SCTP_CHUNK_INIT}).
@@ -157,26 +220,25 @@ mk_pkts(Pkt, _Opts) ->
 -define(COOKIE_ACK(),        #sctp_chunk{type = ?SCTP_CHUNK_COOKIE_ACK}).
 -define(SHUTDOWN_COMPLETE(), #sctp_chunk{type = ?SCTP_CHUNK_SHUTDOWN_COMPLETE}).
 
-chunk(Pkt, Chunk) ->
-    case Chunk of
-        ?DATA(PPI, Data)     -> Pkt#{chunk_type => data, ppi => PPI, chunk_data => Data};
-        ?INIT()              -> Pkt#{chunk_type => init};
-        ?INIT_ACK()          -> Pkt#{chunk_type => init_ack};
-        ?SACK()              -> Pkt#{chunk_type => sack};
-        ?HEARTBEAT()         -> Pkt#{chunk_type => heartbeat};
-        ?HEARTBEAT_ACK()     -> Pkt#{chunk_type => heartbeat_ack};
-        ?ABORT()             -> Pkt#{chunk_type => abort};
-        ?SHUTDOWN()          -> Pkt#{chunk_type => shutdown};
-        ?SHUTDOWN_ACK()      -> Pkt#{chunk_type => shutdown_ack};
-        ?ERROR()             -> Pkt#{chunk_type => error};
-        ?COOKIE_ECHO()       -> Pkt#{chunk_type => cookie_echo};
-        ?COOKIE_ACK()        -> Pkt#{chunk_type => cookie_ack};
-        ?SHUTDOWN_COMPLETE() -> Pkt#{chunk_type => shutdown_complete}
-    end.
+chunks(Chunks) ->
+    lists:map(fun chunk/1, Chunks).
 
--define(COUNTS(C, M), #{'_count' := C, max_count := M}).
-maybe_done(?COUNTS(Count, Max), Acc) when 0 < Max, Max < Count -> throw(Acc);
-maybe_done(#{'_count' := C} = Opts, _) -> Opts#{'_count' => C+1}.
+chunk(Chunk) ->
+    case Chunk of
+        ?DATA(PPI, Data)     -> #{chunk_type => data, ppi => PPI, chunk_data => Data};
+        ?INIT()              -> #{chunk_type => init};
+        ?INIT_ACK()          -> #{chunk_type => init_ack};
+        ?SACK()              -> #{chunk_type => sack};
+        ?HEARTBEAT()         -> #{chunk_type => heartbeat};
+        ?HEARTBEAT_ACK()     -> #{chunk_type => heartbeat_ack};
+        ?ABORT()             -> #{chunk_type => abort};
+        ?SHUTDOWN()          -> #{chunk_type => shutdown};
+        ?SHUTDOWN_ACK()      -> #{chunk_type => shutdown_ack};
+        ?ERROR()             -> #{chunk_type => error};
+        ?COOKIE_ECHO()       -> #{chunk_type => cookie_echo};
+        ?COOKIE_ACK()        -> #{chunk_type => cookie_ack};
+        ?SHUTDOWN_COMPLETE() -> #{chunk_type => shutdown_complete}
+    end.
 
 %%%--------------------------------------------------------------------------
 %%% construct a cooked binary with `Payload' stuffed in
@@ -253,3 +315,10 @@ lift(ok, eof) ->
     exit(eof);
 lift(Tag, {Tag, Val}) ->
     Val.
+
+to_map(Tuple) ->
+    [Name|Fields] = tuple_to_list(Tuple),
+    maps:from_list(lists:zip(fields(Name), Fields)).
+
+fields(file_header) ->
+    record_info(fields, file_header).
