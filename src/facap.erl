@@ -8,6 +8,13 @@
     fold/3,
     fold/4]).
 
+%% iterator
+-export(
+   [iterator/1,
+    next/1,
+    finalize/1,
+    inspect/1]).
+
 %% writing
 -export(
    [open_file/1,
@@ -60,11 +67,23 @@ header(File) ->
     after file:close(FD)
     end.
 
+iterator(File) ->
+    iterate(init, File).
+
+next(Iter) ->
+    iterate(next, Iter).
+
+inspect(Iter) ->
+    iterate(state, Iter).
+
+finalize(Iter) ->
+    iterate(finalize, Iter).
+
 list(File) ->
     lists:reverse(fold(fun(P, O) -> [P|O] end, [], File)).
 
 fold(Fun, Acc0, File) ->
-    fold(Fun, Acc0, File, #{max_count => inf}).
+    fold(Fun, Acc0, File, #{}).
 
 fold(Fun, Acc0, File, Opts) ->
     case file:read_file_info(File) of
@@ -77,28 +96,123 @@ fold(Fun, Acc0, File, Opts) ->
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% iterator internals, user side
+
+iterate(init, File) ->
+     spawn(fun() -> init(File) end);
+iterate(next, Pid) ->
+    irecv(isend(Pid, next));
+iterate(state, Pid) ->
+    irecv(isend(Pid, state));
+iterate(finalize, Pid) ->
+    irecv(isend(Pid, quit)).
+
+isend(Pid, Msg) ->
+    case erlang:is_process_alive(Pid) of
+        true -> Pid ! {self(), erlang:make_ref(), Msg};
+        false -> {error, dead}
+    end.
+
+irecv({error, Err}) ->
+    {error, Err};
+irecv({_, _, quit}) ->
+    ok;
+irecv({_, Ref, _}) ->
+    receive {Ref, X} -> X
+    after 1000 -> {error, timeout}
+    end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% runs in iterator process
+
+init(File) ->
+    iloop(iinit(File)).
+
+iinit(File) ->
+    Files = iopen(File),
+    Tree = gb_trees:from_orddict(lists:sort(lists:filtermap(fun ikv/1, Files))),
+    #{tree => Tree}.
+
+ikv(F) ->
+    F ! (R = erlang:make_ref()),
+    receive {R, Pkt} -> {true, {its(Pkt), {F, Pkt}}}
+    after 100 -> false
+    end.
+
+its(#{ts := TS}) ->
+    TS.
+
+iloop(State) ->
+    receive
+        {P, Ref, state} -> iloop(istate(P, Ref, State));
+        {P, Ref, next} -> iloop(inext(P, Ref, State));
+        {_, _, quit} -> ifinal(State)
+    end.
+
+iopen(File) ->
+    Fs = filelib:wildcard(File),
+    Self = self(),
+    Fun = fun(Pkt, A) -> receive R -> Self ! {R, Pkt}, A end end,
+    [spawn(fun() -> fold(Fun, #{}, F, #{}) end) || F <- Fs].
+
+
+istate(P, Ref, State) ->
+    P ! {Ref, istate(State)},
+    State.
+
+istate(#{tree := Tree}) ->
+    iiter(gb_trees:iterator(Tree), []).
+
+iiter(Iter, Acc) ->
+    case gb_trees:next(Iter) of
+        none -> lists:reverse(Acc);
+        {_TS, {_F, S}, I} -> iiter(I, [S|Acc])
+    end.
+
+inext(P, Ref, State0) ->
+    {Pkt, State} = inext(State0),
+    P ! {Ref, Pkt},
+    State.
+
+inext(#{tree := Tree} = State) ->
+    case catch gb_trees:take_smallest(Tree) of
+        {_, {F, Pkt}, T} -> {Pkt, State#{tree => iinsert(F, T)}};
+        {'EXIT', _} -> {eof, State}
+    end.
+
+iinsert(F, Tree) ->
+    case ikv(F) of
+        {true, {K, V}} -> gb_trees:insert(K, V, Tree);
+        false -> Tree
+    end.
+
+ifinal(State) ->
+    State.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 files(Dir) ->
     {ok, Fs}  = file:list_dir(Dir),
     [filename:join(Dir, F) || F <- Fs].
 
-folder(Fun, Acc0, Opts, Files) ->
-    lists:foldl(mk_folder(Fun, Opts), Acc0, Files).
+folder(Fun, Acc0, State, Files) ->
+    lists:foldl(mk_folder(Fun, State), Acc0, Files).
 
-mk_folder(Fun, Opts) ->
-    fun(F, A) -> do_fold(Fun, A, F, Opts) end.
+mk_folder(Fun, State) ->
+    fun(F, A) -> do_fold(Fun, A, F, State) end.
 
-do_fold(Fun, Acc0, File, Opts0) ->
+do_fold(Fun, Acc0, File, Opts) ->
     {ok, FD} = file:open(File, [read, raw, binary, read_ahead]),
-    Opts = opts(FD, Opts0),
-    try fold_loop(Fun, Acc0, Opts)
+    State = state0(FD, File, Opts),
+    try fold_loop(Fun, Acc0, State)
     catch throw:Acc -> Acc
     after file:close(FD)
     end.
 
-opts(FD, Opts) ->
+state0(FD, File, State) ->
     FH = file_header(FD),
-    maps:merge(#{'_count' => 0, fd => FD, ptr => 24, file_header => FH}, Opts).
+    State0 = #{'_count' => 0, fd => FD, filename => File, ptr => 24, file_header => FH},
+    maps:merge(State0, State).
 
 file_header(FD) ->
     case hex(lift(ok, file:pread(FD, 0, 4))) of
@@ -139,31 +253,35 @@ dll(?DLT_EN10MB) -> ether;
 dll(?DLT_LINUX_SLL) -> linux_cooked;
 dll(?DLT_LINUX_SLL2) -> linux_cooked_v2.
 
-fold_loop(Fun, Acc, Opts0) ->
-    Opts = try packet(Opts0) catch error:{badmatch,eof} -> throw(Acc) end,
-    Pkt = decapsulate(Opts),
-    fold_loop(Fun, Fun(Pkt, Acc), Opts).
+fold_loop(Fun, Acc, State0) ->
+    State = try packet(State0) catch error:{badmatch,eof} -> throw(Acc) end,
+    Pkt = decapsulate(State),
+    fold_loop(Fun, Fun(Pkt, Acc), State).
 
-packet(Opts0) ->
-    #{fd := FD, ptr := Ptr, file_header := FH} = Opts = maybe_done(Opts0),
+packet(State0) ->
+    #{fd := FD, ptr := Ptr, file_header := FH} = State = maybe_done(State0),
     {ok, PH} = file:pread(FD, Ptr, 16),
     <<TSsec:32/little, TSfrac:32/little, Cap:32/little, Orig:32/little>> = PH,
     {ok, Payload} = file:pread(FD, Ptr+16, Cap),
-    Opts#{ptr => Ptr+16+Cap,
+    State#{ptr => Ptr+16+Cap,
           packet => #packet{
                        ts_sec = TSsec+TSfrac/FH#file_header.time_resolution,
                        captured_len = Cap,
                        original_len = Orig,
                        payload = Payload}}.
 
-decapsulate(#{'_count' := Count, packet := Packet, file_header := FH}) ->
+decapsulate(#{packet := Packet, file_header := FH} = State) ->
     Protos = pkt:decapsulate(FH#file_header.dll_type, Packet#packet.payload),
-    dec(Protos, #{ts => Packet#packet.ts_sec, count => Count, protos => []}).
+    dec(Protos, pkt0(State)).
+
+pkt0(#{packet := Packet, filename := FN, '_count' := Count}) ->
+    #{ts => Packet#packet.ts_sec, count => Count, filename => FN, protos => []}.
+
 
 -define(CM(C, M), #{'_count' := C, max_count := M}).
 -define(IS_DONE(Count, Max), is_integer(Max), Max < Count).
 maybe_done(?CM(Count, Max)) when ?IS_DONE(Count, Max) -> error({badmatch, eof});
-maybe_done(Opts) -> maps:update_with('_count', fun plus1/1, Opts).
+maybe_done(State) -> maps:update_with('_count', fun plus1/1, State).
 
 plus1(I) -> I+1.
 
