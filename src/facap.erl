@@ -5,6 +5,7 @@
 -export(
    [header/1,
     list/1,
+    list/2,
     fold/3,
     fold/4]).
 
@@ -52,6 +53,7 @@
         {maj_vsn,
          min_vsn,
          snap_length,
+         endian,
          time_resolution,
          dll_type}).
 
@@ -80,7 +82,10 @@ finalize(Iter) ->
     iterate(finalize, Iter).
 
 list(File) ->
-    lists:reverse(fold(fun(P, O) -> [P|O] end, [], File)).
+    list(File, #{}).
+
+list(File, Opts) ->
+    lists:reverse(fold(fun(P, O) -> [P|O] end, [], File, Opts)).
 
 fold(Fun, Acc0, File) ->
     fold(Fun, Acc0, File, #{}).
@@ -211,7 +216,7 @@ do_fold(Fun, Acc0, File, Opts) ->
 
 state0(FD, File, State) ->
     FH = file_header(FD),
-    State0 = #{'_count' => 0, fd => FD, filename => File, ptr => 24, file_header => FH},
+    State0 = #{'_seqno' => 0, fd => FD, filename => File, ptr => 24, file_header => FH},
     maps:merge(State0, State).
 
 file_header(FD) ->
@@ -233,6 +238,7 @@ file_header(Endian, TimeRes, FD) ->
     #file_header{
        maj_vsn = Maj,
        min_vsn = Min,
+       endian = Endian,
        time_resolution = timeres(TimeRes),
        snap_length = Snap,
        dll_type = dll(DLL)}.
@@ -261,7 +267,7 @@ fold_loop(Fun, Acc, State0) ->
 packet(State0) ->
     #{fd := FD, ptr := Ptr, file_header := FH} = State = maybe_done(State0),
     {ok, PH} = file:pread(FD, Ptr, 16),
-    <<TSsec:32/little, TSfrac:32/little, Cap:32/little, Orig:32/little>> = PH,
+    {TSsec, TSfrac, Cap, Orig} = ph(FH#file_header.endian, PH),
     {ok, Payload} = file:pread(FD, Ptr+16, Cap),
     State#{ptr => Ptr+16+Cap,
           packet => #packet{
@@ -270,18 +276,23 @@ packet(State0) ->
                        original_len = Orig,
                        payload = Payload}}.
 
+ph(little, <<TSsec:32/little, TSfrac:32/little, Cap:32/little, Orig:32/little>>) ->
+    {TSsec, TSfrac, Cap, Orig};
+ph(big, <<TSsec:32/big, TSfrac:32/big, Cap:32/big, Orig:32/big>>) ->
+    {TSsec, TSfrac, Cap, Orig}.
+
 decapsulate(#{packet := Packet, file_header := FH} = State) ->
     Protos = pkt:decapsulate(FH#file_header.dll_type, Packet#packet.payload),
     dec(Protos, pkt0(State)).
 
-pkt0(#{packet := Packet, filename := FN, '_count' := Count}) ->
-    #{ts => Packet#packet.ts_sec, count => Count, filename => FN, protos => []}.
+pkt0(#{packet := Packet, filename := FN, '_seqno' := Seqno}) ->
+    #{ts => Packet#packet.ts_sec, seqno => Seqno, filename => FN, protos => []}.
 
 
--define(CM(C, M), #{'_count' := C, max_count := M}).
--define(IS_DONE(Count, Max), is_integer(Max), Max < Count).
-maybe_done(?CM(Count, Max)) when ?IS_DONE(Count, Max) -> error({badmatch, eof});
-maybe_done(State) -> maps:update_with('_count', fun plus1/1, State).
+-define(SC(S, C), #{'_seqno' := S, count := C}).
+-define(IS_DONE(Seqno, Count), is_integer(Count), Count =< Seqno).
+maybe_done(?SC(Seqno, Count)) when ?IS_DONE(Seqno, Count) -> error({badmatch, eof});
+maybe_done(State) -> maps:update_with('_seqno', fun plus1/1, State).
 
 plus1(I) -> I+1.
 
