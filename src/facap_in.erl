@@ -45,7 +45,7 @@ do_fold(Fun, Acc0, File, Opts) ->
     end.
 
 state0(FD, File, State) ->
-    State0 = #{'_seqno' => 0, fd => FD, filename => File, fmod => fmod(FD)},
+    State0 = #{seqno => 0, fd => FD, filename => File, fmod => fmod(FD)},
     file_header(maps:merge(State0, State)).
 
 fmod(FD) ->
@@ -65,13 +65,13 @@ magic(FD) ->
         Err -> error(Err)
     end.
 
-file_header(#{fd := FD, fmd := FMod} = S) ->
+file_header(#{fd := FD, fmod := FMod} = S) ->
     S#{fstate => FMod:file_header(FD)}.
 
 fold_loop(Fun, Acc, State0) ->
     case packet(State0) of
-        {eof, State} ->
-            {ok, State};
+        {eof, _State} ->
+            Acc;
         {Packet, State} ->
             fold_loop(Fun, Fun(dec(Packet, State), Acc), State)
     end.
@@ -82,10 +82,10 @@ packet(State) ->
         S -> get_packet(S)
     end.
 
--define(SC(S, C), #{'_seqno' := S, count := C}).
+-define(SC(S, C), #{seqno := S, count := C}).
 -define(IS_DONE(Seqno, Count), is_integer(Count), Count =< Seqno).
 maybe_done(?SC(Seqno, Count)) when ?IS_DONE(Seqno, Count) -> eof;
-maybe_done(State) -> maps:update_with('_seqno', fun plus1/1, State).
+maybe_done(State) -> maps:update_with(seqno, fun plus1/1, State).
 
 plus1(I) -> I+1.
 
@@ -95,5 +95,5 @@ get_packet(#{fd := FD, fstate := FS0, fmod := FM} = S) ->
         eof -> {eof, S}
     end.
 
-dec(Payload, #{file_header := FH}) ->
-    #{dec => facap_pkt:dec(FH, Payload), file_header => FH}.
+dec(#{payload := Payload}, #{fstate := #{dll_type := DLL}}) ->
+    facap_pkt:dec(DLL, Payload).

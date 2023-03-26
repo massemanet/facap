@@ -1,4 +1,4 @@
--module(fakap_sctp).
+-module(facap_sctp).
 
 -export([chunks/1]).
 

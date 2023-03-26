@@ -31,24 +31,27 @@ dll(?DLT_EN10MB) -> ether;
 dll(?DLT_LINUX_SLL) -> linux_cooked;
 dll(?DLT_LINUX_SLL2) -> linux_cooked_v2.
 
-dec([], Pkt) ->
+dec(DLL, Payload) ->
+    protos(pkt:decapsulate(DLL, Payload), #{}).
+
+protos([], Pkt) ->
     Pkt;
-dec([<<>>], Pkt) ->
+protos([<<>>], Pkt) ->
     Pkt;
-dec([H|T], Pkt) ->
+protos([H|T], Pkt) ->
     case H of
         ?COOKED(PT) ->
-            dec(T, mappend(protos, {cooked, cooked_dir(PT)}, Pkt));
+            protos(T, mappend(protos, {cooked, cooked_dir(PT)}, Pkt));
         ?COOKED2(PT) ->
-            dec(T, mappend(protos, {cooked2, cooked_dir(PT)}, Pkt));
+            protos(T, mappend(protos, {cooked2, cooked_dir(PT)}, Pkt));
         ?ETHER() ->
-            dec(T, mappend(protos, ether, Pkt));
+            protos(T, mappend(protos, ether, Pkt));
         ?ARP() ->
-            dec(T, mappend(protos, arp, Pkt));
+            protos(T, mappend(protos, arp, Pkt));
         ?IP4(Saddr, Daddr) ->
-            dec(T, mappend(protos, #{ip => 4, saddr => Saddr, daddr => Daddr}, Pkt));
+            protos(T, mappend(protos, #{ip => 4, saddr => Saddr, daddr => Daddr}, Pkt));
         ?IP6(Saddr, Daddr) ->
-            dec(T, mappend(protos, #{ip => 6, saddr => Saddr, daddr => Daddr}, Pkt));
+            protos(T, mappend(protos, #{ip => 6, saddr => Saddr, daddr => Daddr}, Pkt));
         ?ICMP() ->
             mappend(protos, icmp, Pkt);
         ?SCTP(Sport, Dport, Chunks) ->

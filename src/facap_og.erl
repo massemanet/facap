@@ -15,10 +15,11 @@ packet(FD, S) ->
 
 get_file_header(FD) ->
     case file:pread(FD, 0, 4) of
-        {ok, <<16#a1b23c4d:32/big>>}    -> file_header(big, nano, FD);
-        {ok, <<16#a1b2c3d4:32/big>>}    -> file_header(big, micro, FD);
-        {ok, <<16#4d3cb2a1:32/little>>} -> file_header(little, nano, FD);
-        {ok, <<16#d4c3b2a1:32/little>>} -> file_header(little, micro, FD)
+        {ok, <<16#a1b23c4d:32>>} -> file_header(big, nano, FD);
+        {ok, <<16#a1b2c3d4:32>>} -> file_header(big, micro, FD);
+        {ok, <<16#4d3cb2a1:32>>} -> file_header(little, nano, FD);
+        {ok, <<16#d4c3b2a1:32>>} -> file_header(little, micro, FD);
+        Err -> error({bad_magic, Err})
     end.
 
 file_header(Endian, TimeRes, FD) ->
@@ -46,15 +47,22 @@ timeres(nano) -> 1_000_000_000.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% packet
 
-get_packet(FD, #{ptr := Ptr, endian := Endian, time_res := TimeRes} = S) ->
-    {ok, PH} = file:pread(FD, Ptr, 16),
-    {TSsec, TSfrac, Cap, Orig} = ph(Endian, PH),
-    {ok, Payload} = file:pread(FD, Ptr+16, Cap),
-    {S#{ptr => Ptr+16+Cap},
-     #{ts_sec => TSsec+(TSfrac/TimeRes),
-       captured_len => Cap,
-       original_len => Orig,
-       payload => Payload}}.
+get_packet(FD, #{ptr := Ptr, endian := Endian, time_resolution := TimeRes} = S) ->
+    case file:pread(FD, Ptr, 16) of
+        {ok, PH} ->
+            {TSsec, TSfrac, Cap, Orig} = ph(Endian, PH),
+            case file:pread(FD, Ptr+16, Cap) of
+                {ok, Payload} ->
+                    {S#{ptr => Ptr+16+Cap},
+                     #{ts_sec => TSsec+(TSfrac/TimeRes),
+                       captured_len => Cap,
+                       original_len => Orig,
+                       payload => Payload}};
+                eof ->
+                    eof
+            end;
+        eof -> eof
+    end.
 
 ph(little, <<TSsec:32/little, TSfrac:32/little, Cap:32/little, Orig:32/little>>) ->
     {TSsec, TSfrac, Cap, Orig};
