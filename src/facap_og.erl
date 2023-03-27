@@ -1,5 +1,4 @@
 -module(facap_og).
-
 -export(
    [file_header/1,
     packet/2]).
@@ -47,19 +46,20 @@ timeres(nano) -> 1_000_000_000.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% packet
 
-get_packet(FD, #{ptr := Ptr, endian := Endian, time_resolution := TimeRes} = S) ->
+get_packet(FD, #{ptr := Ptr, endian := Endian} = S) ->
     case file:pread(FD, Ptr, 16) of
         {ok, PH} ->
             {TSsec, TSfrac, Cap, Orig} = ph(Endian, PH),
             case file:pread(FD, Ptr+16, Cap) of
                 {ok, Payload} ->
-                    {S#{ptr => Ptr+16+Cap},
-                     #{ts_sec => TSsec+(TSfrac/TimeRes),
+                    #{dll_type := DLL, time_resolution := TimeRes} = S,
+                    {#{ts_sec => TSsec+(TSfrac/TimeRes),
                        captured_len => Cap,
                        original_len => Orig,
-                       payload => Payload}};
-                eof ->
-                    eof
+                       dll_type => DLL,
+                       payload => Payload},
+                     S#{ptr => Ptr+16+Cap}};
+                eof -> eof
             end;
         eof -> eof
     end.

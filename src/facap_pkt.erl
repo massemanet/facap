@@ -46,12 +46,12 @@ protos([H|T], Pkt) ->
             protos(T, mappend(protos, {cooked2, cooked_dir(PT)}, Pkt));
         ?ETHER() ->
             protos(T, mappend(protos, ether, Pkt));
-        ?ARP() ->
-            protos(T, mappend(protos, arp, Pkt));
         ?IP4(Saddr, Daddr) ->
             protos(T, mappend(protos, #{ip => 4, saddr => Saddr, daddr => Daddr}, Pkt));
         ?IP6(Saddr, Daddr) ->
             protos(T, mappend(protos, #{ip => 6, saddr => Saddr, daddr => Daddr}, Pkt));
+        ?ARP() ->
+            mappend(protos, arp, Pkt);
         ?ICMP() ->
             mappend(protos, icmp, Pkt);
         ?SCTP(Sport, Dport, Chunks) ->
@@ -65,7 +65,7 @@ protos([H|T], Pkt) ->
     end.
 
 mappend(Key, Val, Map) ->
-    maps:update_with(Key, fun(Vals) -> [Val|Vals] end, Val, Map).
+    maps:update_with(Key, fun(Vals) -> [Val|Vals] end, [Val], Map).
 
 cooked_dir(0) -> 'incoming(uni)';
 cooked_dir(1) -> 'incoming(broadcast)';

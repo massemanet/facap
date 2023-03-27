@@ -73,7 +73,7 @@ fold_loop(Fun, Acc, State0) ->
         {eof, _State} ->
             Acc;
         {Packet, State} ->
-            fold_loop(Fun, Fun(dec(Packet, State), Acc), State)
+            fold_loop(Fun, Fun(dec(Packet), Acc), State)
     end.
 
 packet(State) ->
@@ -91,9 +91,9 @@ plus1(I) -> I+1.
 
 get_packet(#{fd := FD, fstate := FS0, fmod := FM} = S) ->
     case FM:packet(FD, FS0) of
-        {FS, Packet} -> {Packet, S#{fstate => FS}};
+        {Packet, FS} -> {Packet, S#{fstate => FS}};
         eof -> {eof, S}
     end.
 
-dec(#{payload := Payload}, #{fstate := #{dll_type := DLL}}) ->
+dec(#{payload := Payload, dll_type := DLL}) ->
     facap_pkt:dec(DLL, Payload).
