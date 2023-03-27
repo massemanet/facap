@@ -41,11 +41,11 @@ protos([<<>>], Pkt) ->
 protos([H|T], Pkt) ->
     case H of
         ?COOKED(PT) ->
-            protos(T, mappend(protos, {cooked, cooked_dir(PT)}, Pkt));
+            protos(T, mappend(protos, [{cooked, cooked_dir(PT)}], Pkt));
         ?COOKED2(PT) ->
-            protos(T, mappend(protos, {cooked2, cooked_dir(PT)}, Pkt));
+            protos(T, mappend(protos, [{cooked2, cooked_dir(PT)}], Pkt));
         ?ETHER() ->
-            protos(T, mappend(protos, ether, Pkt));
+            protos(T, mappend(protos, [ether], Pkt));
         ?IP4(Saddr, Daddr) ->
             protos(T, mappend(protos, #{ip => 4, saddr => Saddr, daddr => Daddr}, Pkt));
         ?IP6(Saddr, Daddr) ->
@@ -65,7 +65,7 @@ protos([H|T], Pkt) ->
     end.
 
 mappend(Key, Val, Map) ->
-    maps:update_with(Key, fun(Vals) -> [Val|Vals] end, [Val], Map).
+    maps:update_with(Key, fun(Vals) -> [Val|Vals] end, Val, Map).
 
 cooked_dir(0) -> 'incoming(uni)';
 cooked_dir(1) -> 'incoming(broadcast)';
