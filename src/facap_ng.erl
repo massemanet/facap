@@ -94,9 +94,12 @@ block(?SHB, {ok, Bytes}, S) ->
 
 block(?IDB, {ok, Bytes}, #{endian := E} = S) ->
     <<LinkType:2/bytes, _:2/bytes, SnapLen:4/bytes, Os/bytes>> = Bytes,
-    IF = #{dll_type => swp(E, LinkType),
-           snap_length => swp(E, SnapLen),
-           options => opts(idb, Os, S)},
+    DLL = swp(E, LinkType),
+    IF = maps:merge(
+           #{dll_type => DLL,
+             dll => facap_pkt:dll(DLL),
+             snap_length => swp(E, SnapLen)},
+           maps:from_list(opts(idb, Os, S))),
     {meta,
      add_if(IF, S)};
 
@@ -123,7 +126,7 @@ block(?EPB, {ok, Bytes}, #{endian := E} = S) ->
     {#{iid => Iid,
        interface => Interface,
        dll_type => dll(Interface),
-       ts => TS,
+       ts => ts(E, TS, Interface),
        captured_len => Captured,
        original_len => OLen,
        payload => Payload,
@@ -213,6 +216,23 @@ block(?DSB, {ok, _Bytes}, #{endian := _E} = S) ->
 
 block(Type, Read, S) ->
     error({read_error, Type, Read, S}).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% time
+
+ts(E, TS, undefined) ->
+    ts(E, TS, #{if_tsresol => 1_000_000});
+ts(little, <<U:32/little, L:32/little>>, #{if_tsresol := TSres}) ->
+    fts(U, L, TSres);
+ts(big, <<U:32/big, L:32/big>>, #{if_tsresol := TSres}) ->
+    fts(U, L, TSres).
+
+fts(U, L, TSres) ->
+    <<N:64>> = <<U:32, L:32>>,
+    N/TSres.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% opts
 
 opts(_, <<>>, _) -> [];
 opts(S, O, #{endian := E}) -> opts(E, S, O, []).
@@ -316,6 +336,24 @@ opt(flags, End, Val) ->
         {fcs_len, FCS},
         {cast, opt_flag_cast(Cast)},
         {dir, opt_flag_dir(Dir)}])};
+
+%% The if_tsresol option identifies the resolution of timestamps. If
+%% the Most Significant Bit is equal to zero, the remaining bits
+%% indicates the resolution of the timestamp as a negative power of 10
+%% (e.g. 6 means microsecond resolution, timestamps are the number of
+%% microseconds since 1970-01-01 00:00:00 UTC). If the Most
+%% Significant Bit is equal to one, the remaining bits indicates the
+%% resolution as negative power of 2 (e.g. 10 means 1/1024 of
+%% second). If this option is not present, a resolution of 10^-6 is
+%% assumed (i.e. timestamps have the same resolution of the standard
+%% 'libpcap' timestamps).
+opt(if_tsresol, _, Val) ->
+    {if_tsresol,
+     case Val of
+         <<0:1, TenExp:7>> -> round(math:pow(10, TenExp));
+         <<1:1, TwoExp:7>> -> round(math:pow(2, TwoExp))
+     end};
+
 opt(K, _E, V) ->
     {K, V}.
 

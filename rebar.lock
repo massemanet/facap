@@ -1,15 +1,8 @@
 {"1.2.0",
-[{<<"pcapng">>,
-  {git,"https://github.com/travelping/pcapng.git",
-       {ref,"acda9f0b44dd678d41fc658f6f67d78e1574e52d"}},
-  0},
- {<<"pkt">>,{pkg,<<"pkt">>,<<"0.6.0">>},0},
- {<<"redbug">>,{pkg,<<"redbug">>,<<"2.0.9">>},0}]}.
+[{<<"pkt">>,{pkg,<<"pkt">>,<<"0.6.0">>},0}]}.
 [
 {pkg_hash,[
- {<<"pkt">>, <<"F4B73090FC7C71CC7F4AFC172537BBEC80BDC981365F04017D6F02814ACC8399">>},
- {<<"redbug">>, <<"47A0802EA5CA5F2C54BD9B0BE429FF3AC839E85A277E97105D7E6107174B25F3">>}]},
+ {<<"pkt">>, <<"F4B73090FC7C71CC7F4AFC172537BBEC80BDC981365F04017D6F02814ACC8399">>}]},
 {pkg_hash_ext,[
- {<<"pkt">>, <<"3FF876782E7D5EC06643038843203C7F5F77BABE35F29BFB95B4935BACBC32AC">>},
- {<<"redbug">>, <<"048CECDD53183A57E0F8A3F81BED2EA4C3AD424D319EABD5EF158B9FC3EA2C69">>}]}
+ {<<"pkt">>, <<"3FF876782E7D5EC06643038843203C7F5F77BABE35F29BFB95B4935BACBC32AC">>}]}
 ].
