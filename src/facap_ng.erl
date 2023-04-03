@@ -81,7 +81,7 @@ block(?SHB, {ok, Bytes}, S) ->
      S#{major_version => swp(E, Maj),
         minor_version => swp(E, Min),
         endian => E,
-        options => byte_size(Os)}};
+        options => opts(shb, Os, #{endian => E})}};
 
 %%% Interface Description Block
 %% Block Type (4 bytes) = 0x00000001
@@ -96,7 +96,7 @@ block(?IDB, {ok, Bytes}, #{endian := E} = S) ->
     <<LinkType:2/bytes, _:2/bytes, SnapLen:4/bytes, Os/bytes>> = Bytes,
     IF = #{dll_type => swp(E, LinkType),
            snap_length => swp(E, SnapLen),
-           options => byte_size(Os)},
+           options => opts(idb, Os, S)},
     {meta,
      add_if(IF, S)};
 
@@ -117,16 +117,17 @@ block(?EPB, {ok, Bytes}, #{endian := E} = S) ->
     Iid = swp(E, I),
     Captured = swp(E, C),
     OLen = swp(E, L),
-    #{dll_type := DLL} = Interface = get_if(Iid, S),
-    <<Payload:Captured/bytes, Os/bytes>> = X,
+    Interface = get_if(Iid, S),
+    Pad = pad(Captured),
+    <<Payload:Captured/bytes, _:Pad/bytes, Os/bytes>> = X,
     {#{iid => Iid,
        interface => Interface,
-       dll_type => DLL,
+       dll_type => dll(Interface),
        ts => TS,
        captured_len => Captured,
        original_len => OLen,
        payload => Payload,
-       options => byte_size(Os)},
+       options => opts(epb, Os, S)},
     S};
 
 %% Vendor Specific Block
@@ -159,12 +160,11 @@ block(?SPB, {ok, Bytes}, #{endian := E} = S) ->
     OLen = swp(E, L),
     #{dll_type := DLL, snap_length := Snap} = get_if(0, S),
     Captured = max(Snap, OLen),
-    <<Payload:Captured/bytes, Os/bytes>> = X,
+    <<Payload:Captured/bytes, _/bytes>> = X,
     {#{dll_type => DLL,
        captured_len => Captured,
        original_len => OLen,
-       payload => Payload,
-       options => byte_size(Os)}};
+       payload => Payload}};
 
 %% name resolution block
 %%
@@ -214,6 +214,125 @@ block(?DSB, {ok, _Bytes}, #{endian := _E} = S) ->
 block(Type, Read, S) ->
     error({read_error, Type, Read, S}).
 
+opts(_, <<>>, _) -> [];
+opts(S, O, #{endian := E}) -> opts(E, S, O, []).
+
+opts(E, S, O, [{eoc, _}|Os]) ->
+    opts(E, S, O, Os);
+opts(_, _, O, Os) when byte_size(O) < 4 ->
+    Os;
+opts(E, S, <<Type:2/bytes, L:2/bytes, X/bytes>>, Os) ->
+    Len = swp(E, L),
+    Pad = pad(Len),
+    <<Val:Len/bytes, _:Pad/bytes, Y/bytes>> = X,
+    opts(E, S, Y, [opt(opt_key(S, swp(E, Type)), E, Val)|Os]).
+
+opt_key(_, 0) -> eoc;
+opt_key(_, 1) -> comment;
+
+opt_key(shb, 2) -> hw;
+opt_key(shb, 3) -> os;
+opt_key(shb, 4) -> appl;
+
+opt_key(idb,  2) -> if_name;
+opt_key(idb,  3) -> if_description;
+opt_key(idb,  4) -> if_ipv4addr;
+opt_key(idb,  5) -> if_ipv6addr;
+opt_key(idb,  6) -> if_macaddr;
+opt_key(idb,  7) -> if_euiaddr;
+opt_key(idb,  8) -> if_speed;
+opt_key(idb,  9) -> if_tsresol;
+opt_key(idb, 10) -> if_tzone;
+opt_key(idb, 11) -> if_filter;
+opt_key(idb, 12) -> if_os;
+opt_key(idb, 13) -> if_fcslen;
+opt_key(idb, 14) -> if_tsoffset;
+opt_key(idb, 15) -> if_hardware;
+opt_key(idb, 16) -> if_txspeed;
+opt_key(idb, 17) -> if_rxspeed;
+
+opt_key(epb, 2) -> flags;
+opt_key(epb, 3) -> hash;
+opt_key(epb, 4) -> dropcount;
+opt_key(epb, 5) -> packetid;
+opt_key(epb, 6) -> queue;
+opt_key(epb, 7) -> verdict;
+
+opt_key(nrb, 2) -> dnsname;
+opt_key(nrb, 3) -> dnsIP4addr;
+opt_key(nrb, 4) -> dnsIP6addr;
+
+opt_key(isb, 2) -> starttime;
+opt_key(isb, 3) -> endtime;
+opt_key(isb, 4) -> ifrecv;
+opt_key(isb, 5) -> ifdrop;
+opt_key(isb, 6) -> filteraccept;
+opt_key(isb, 7) -> osdrop;
+opt_key(isb, 8) -> usrdeliv;
+
+opt_key(_, I) -> I.
+
+%%  EPB flag
+%%   0-1 Inbound / Outbound packet (00 = information not available, 01 = inbound, 10 = outbound)
+%%   2-4 Reception type (000 = not specified, 001 = unicast, 010 = multicast, 011 = broadcast, 100 = promiscuous).
+%%   5-8 Frame Check Sequence length, in octets (0000 if this information is not available).
+%%   9-15 Reserved (MUST be set to zero).
+%%  16-31 link-layer-dependent errors
+%%         Bit 31 = symbol error,
+%%         Bit 30 = preamble error
+%%         Bit 29 = Start Frame Delimiter error
+%%         Bit 28 = unaligned frame error
+%%         Bit 27 = wrong Inter Frame Gap error
+%%         Bit 26 = packet too short error
+%%         Bit 25 = packet too long error
+%%         Bit 24 = CRC error
+opt(flags, End, Val) ->
+    IVal = swp(End, Val),
+    <<Esym:1,
+      Epre:1,
+      Esfd:1,
+      Euna:1,
+      Eifg:1,
+      Ep2s:1,
+      Ep2l:1,
+      Ecrc:1,
+      _:8,
+      0:7,
+      FCS:4,
+      Cast:3,
+      Dir:2>> = <<IVal:32>>,
+    {flags,
+     lists:foldl(
+       fun({_, 0}, O) -> O; ({K, V}, O) -> O#{K => V} end,
+       #{},
+       [{error_symbol, Esym},
+        {error_preamble, Epre},
+        {error_sfd, Esfd},
+        {error_unaligned, Euna},
+        {error_ifg, Eifg},
+        {error_p2s, Ep2s},
+        {error_p2l, Ep2l},
+        {error_crc, Ecrc},
+        {fcs_len, FCS},
+        {cast, opt_flag_cast(Cast)},
+        {dir, opt_flag_dir(Dir)}])};
+opt(K, _E, V) ->
+    {K, V}.
+
+opt_flag_dir(0) -> 0;
+opt_flag_dir(1) -> in;
+opt_flag_dir(2) -> out.
+
+opt_flag_cast(0) -> 0;
+opt_flag_cast(1) -> uni;
+opt_flag_cast(2) -> multi;
+opt_flag_cast(3) -> broad;
+opt_flag_cast(4) -> promiscuous.
+
+%% lookup table
+pad(I) ->
+    element((I band 3)+1, {0, 3, 2, 1}).
+
 swp(big, <<I:16/big>>) -> I;
 swp(little, <<I:16/little>>) -> I;
 swp(big, <<I:32/big>>) -> I;
@@ -228,3 +347,6 @@ get_if(I, #{ifs := IFS}) ->
     maps:get(I, IFS, undefined);
 get_if(_, _) ->
     undefined.
+
+dll(undefined) -> 0;
+dll(#{dll_type := DLL}) -> DLL.

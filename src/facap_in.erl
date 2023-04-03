@@ -95,5 +95,5 @@ get_packet(#{fd := FD, fstate := FS0, fmod := FM} = S) ->
         eof -> {eof, S}
     end.
 
-dec(#{payload := Payload, dll_type := DLL}) ->
-    facap_pkt:dec(DLL, Payload).
+dec(#{payload := Payload, dll_type := DLL} = P) ->
+    maps:merge(P, facap_pkt:dec(DLL, Payload)).

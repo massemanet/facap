@@ -6,6 +6,8 @@
 
 -include_lib("pkt/include/pkt.hrl").
 
+-define(NULL(),
+        #null{}).
 -define(COOKED(PT),
         #linux_cooked{packet_type = PT}).
 -define(COOKED2(PT),
@@ -31,8 +33,10 @@ dll(?DLT_EN10MB) -> ether;
 dll(?DLT_LINUX_SLL) -> linux_cooked;
 dll(?DLT_LINUX_SLL2) -> linux_cooked_v2.
 
+dec(?DLT_NULL, Payload) ->
+    #{protos => [], payload => Payload};
 dec(DLL, Payload) ->
-    protos(pkt:decapsulate(DLL, Payload), #{}).
+    protos(pkt:decapsulate(DLL, Payload), #{dll => pkt_dlt:codec(DLL)}).
 
 protos([], Pkt) ->
     Pkt;
@@ -40,6 +44,8 @@ protos([<<>>], Pkt) ->
     Pkt;
 protos([H|T], Pkt) ->
     case H of
+        ?NULL() ->
+            protos(T, mappend(protos, [null], Pkt));
         ?COOKED(PT) ->
             protos(T, mappend(protos, [{cooked, cooked_dir(PT)}], Pkt));
         ?COOKED2(PT) ->
