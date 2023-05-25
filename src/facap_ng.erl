@@ -221,9 +221,9 @@ block(Type, Read, S) ->
 %% time
 
 ts(little, <<U:32/little, L:32/little>>, IF) ->
-    fts(<<U, L>>, IF);
+    fts(<<U:32, L:32>>, IF);
 ts(big, <<U:32/big, L:32/big>>, IF) ->
-    fts(<<U, L>>, IF).
+    fts(<<U:32, L:32>>, IF).
 
 fts(<<N:64>>, IF) ->
     N/tsres(IF).
