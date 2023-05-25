@@ -220,16 +220,16 @@ block(Type, Read, S) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% time
 
-ts(E, TS, undefined) ->
-    ts(E, TS, #{if_tsresol => 1_000_000});
-ts(little, <<U:32/little, L:32/little>>, #{if_tsresol := TSres}) ->
-    fts(U, L, TSres);
-ts(big, <<U:32/big, L:32/big>>, #{if_tsresol := TSres}) ->
-    fts(U, L, TSres).
+ts(little, <<U:32/little, L:32/little>>, IF) ->
+    fts(<<U, L>>, IF);
+ts(big, <<U:32/big, L:32/big>>, IF) ->
+    fts(<<U, L>>, IF).
 
-fts(U, L, TSres) ->
-    <<N:64>> = <<U:32, L:32>>,
-    N/TSres.
+fts(<<N:64>>, IF) ->
+    N/tsres(IF).
+
+tsres(#{if_tsresol := TSres}) -> TSres;
+tsres(_) -> 1_000_000.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% opts

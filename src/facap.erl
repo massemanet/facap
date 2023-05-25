@@ -26,12 +26,12 @@ open_file(File) ->
     open_file(File, #{}).
 
 open_file(File, Opts) ->
-    file_out:open(Opts#{file => File}).
+    facap_out:open(Opts#{file => File}).
 
 close_file(S) ->
     facap_out:close(S).
 
-append_file(Pkt, S) ->
+append_file(S, Pkt) ->
     facap_out:append(Pkt, S).
 
 iterator(File) ->
