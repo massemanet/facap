@@ -228,6 +228,9 @@ ts(big, <<U:32/big, L:32/big>>, IF) ->
 fts(<<N:64>>, IF) ->
     N/tsres(IF).
 
+%% If [if_tsresol] option is not present, a resolution of 10^-6 is
+%% assumed (i.e. timestamps have the same resolution of the standard
+%% 'libpcap' timestamps).
 tsres(#{if_tsresol := TSres}) -> TSres;
 tsres(_) -> 1_000_000.
 
